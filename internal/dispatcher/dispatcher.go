@@ -2,15 +2,13 @@ package dispatcher
 
 import (
 	"log"
-	"math"
-	"math/rand"
 	"sync"
 	"time"
 )
 
 // Dispatcher -
 type Dispatcher struct {
-	subscribers   map[int]dispatchSubscriber
+	subscribers   map[*dispatchSubscriber]struct{}
 	subscribersMu *sync.Mutex
 }
 
@@ -22,7 +20,7 @@ type dispatchSubscriber struct {
 // NewDispatcher -
 func NewDispatcher() *Dispatcher {
 	return &Dispatcher{
-		subscribers:   make(map[int]dispatchSubscriber),
+		subscribers:   make(map[*dispatchSubscriber]struct{}),
 		subscribersMu: &sync.Mutex{},
 	}
 }
@@ -31,7 +29,7 @@ func NewDispatcher() *Dispatcher {
 func (d *Dispatcher) Dispatch(err error) error {
 	d.subscribersMu.Lock()
 	defer d.subscribersMu.Unlock()
-	for _, subscriber := range d.subscribers {
+	for subscriber := range d.subscribers {
 		select {
 		case <-time.After(time.Second * 5):
 			log.Println("Unexpected rabbitmq error: timeout in dispatch")
@@ -43,30 +41,23 @@ func (d *Dispatcher) Dispatch(err error) error {
 
 // AddSubscriber -
 func (d *Dispatcher) AddSubscriber() (<-chan error, chan<- struct{}) {
-	const maxRand = math.MaxInt
-	const minRand = 0
-	id := rand.Intn(maxRand-minRand) + minRand
-
 	closeCh := make(chan struct{})
 	notifyCancelOrCloseChan := make(chan error)
-
-	d.subscribersMu.Lock()
-	d.subscribers[id] = dispatchSubscriber{
+	subscriber := &dispatchSubscriber{
 		notifyCancelOrCloseChan: notifyCancelOrCloseChan,
 		closeCh:                 closeCh,
 	}
+
+	d.subscribersMu.Lock()
+	d.subscribers[subscriber] = struct{}{}
 	d.subscribersMu.Unlock()
 
-	go func(id int) {
+	go func() {
 		<-closeCh
 		d.subscribersMu.Lock()
 		defer d.subscribersMu.Unlock()
-		sub, ok := d.subscribers[id]
-		if !ok {
-			return
-		}
-		close(sub.notifyCancelOrCloseChan)
-		delete(d.subscribers, id)
-	}(id)
+		close(subscriber.notifyCancelOrCloseChan)
+		delete(d.subscribers, subscriber)
+	}()
 	return notifyCancelOrCloseChan, closeCh
 }
